@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace Oxide.Plugins
 {
-    [Info("EventDead", "Larry", "0.0.5")]
+    [Info("EventDead", "Larry", "0.0.6")]
     internal class EventDead : RustPlugin
     {
 
@@ -25,19 +25,27 @@ namespace Oxide.Plugins
         private Timer freezeTimer;
 
         private bool EventOpen;
+        private bool doAirdrop;
         private bool EventStarted;
+        private bool EventLive;
         private bool EventLimitPlayers;
         private string EventKit;
-         private string json1;
+		private string json1;
         private int maxSpawns;
         private string spawnName;
         public static Item itemp;
 
+		private string winnerFirst = "N/A"; // added to display winners when typing command /winners
+		private string winnerSecond = "N/A";
+		private string winnerThird = "N/A";
+		
         private  List<BasePlayer> players;
         
         private CuiElementContainer elements;
         public static FieldInfo lastPositionValue;
         private int currentCount = 0;
+
+        public Vector3 airdropPos;
 
         private  List<UnityEngine.GameObject> objectsToBlow;
 
@@ -51,10 +59,13 @@ namespace Oxide.Plugins
         [PluginReference]
         Plugin checkCeiling;
 
-        private static string MessagePrefix =  "<color=orange>[ Event ]:</color> ";
-        private static string MessageEventOpen = "has opened the event! Type /event to join!";
-        private static string MessageEventLaunch = "Event will begin in 10 seconds!";
-        private static string MessageEventWinner = "The winner is {0}!";
+        [PluginReference]
+        Plugin PopupNotifications;
+
+        private static string MessagePrefix =  "[ <color=#406B35>DeadLaugh Event</color> ]: ";
+        private static string MessageEventOpen = "has opened the event! Type <color=red>/event</color> to join!";
+        private static string MessageEventLaunch = "Event will begin in <color=red>10</color> seconds!";
+        private static string MessageEventWinner = "The winner is <color=red>{0}</color>!";
         private static string MessageEventWinner2 = "They will be momentarily sacrificed to the gods!";
 
   
@@ -63,7 +74,6 @@ namespace Oxide.Plugins
 
 
         /////////////////////////////////////////////////////////////
-
         /////////////// DATA STRUCTURES /////////////////////////////
 
 
@@ -95,10 +105,6 @@ namespace Oxide.Plugins
                 this.mods = itemlist;
                 this.ammo = ammo;
                 this.ammoType = ammoType;
-
-
-                    
-                        
             }
 
         }
@@ -108,9 +114,9 @@ namespace Oxide.Plugins
                 return null;
 
             List<Item> mods = new List<Item>();
-            foreach(Item it in contents.itemList){
-                  mods.Add(it);
-                  //ConsoleSystem.Broadcast("chat.add", new object[] { 0, it.info.displayName.english });
+            foreach(Item itm in contents.itemList){
+                  mods.Add(itm);
+                  //ConsoleSystem.Broadcast("chat.add", new object[] { 0, itm.info.displayName.english });
             }
             return mods;
         }
@@ -144,6 +150,8 @@ namespace Oxide.Plugins
 
             public Vector3 Home;
            
+			public float hydration; // added to save/restore hydration and calories on save/teleport
+			public float calories;
 
             void Awake()
             {
@@ -158,6 +166,8 @@ namespace Oxide.Plugins
                 if (!savedHome)
                     Home = player.transform.position;
                 savedHome = true;
+				calories = player.metabolism.calories.value;
+				hydration = player.metabolism.hydration.value;
             }
             public void TeleportHome()
             {
@@ -165,6 +175,8 @@ namespace Oxide.Plugins
                     return;
                 ForcePlayerPosition(player, Home);
                 savedHome = false;
+				player.metabolism.calories.value = calories;
+				player.metabolism.hydration.value = hydration;
             }
 
             public void SaveInventory()
@@ -226,6 +238,10 @@ namespace Oxide.Plugins
 
         void Loaded()
         {
+            airdropPos = new Vector3();
+            airdropPos = Vector3.zero;
+            doAirdrop = false;
+            EventLive = false;
             json1 = null;
             EventPlayers = new List<EventPlayer>();
             DeletingAdmins = new List<BasePlayer>();
@@ -320,31 +336,48 @@ namespace Oxide.Plugins
         [ChatCommand("guiclear")]
         private void guiclear(BasePlayer player, string command, string[] args)
         {
+           
+
             CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = player.net.connection }, null, "DestroyUI", new Facepunch.ObjectList("event_top", null, null, null, null));
             
         }
 
-
+		[ChatCommand("blackout")] //remove blackout
+        private void eventblackout(BasePlayer player, string command, string[] args)
+        {
+			if (!hasAccess(player)) return;
+			
+            foreach (EventPlayer eventplayer in EventPlayers)
+            {
+				CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = eventplayer.player.net.connection }, null, "DestroyUI", new Facepunch.ObjectList("event_blackout", null, null, null, null));
+               // Effect.server.Run("assets/bundled/prefabs/fx/c4_explosion.prefab", eventplayer.player.transform.position, Vector3.zero, null, false);
+			}
+        }
 
         ////////////////// FREEZE Players ///////////////////////////
 
         private void OnTimerFreeze()
         {
-            if(!EventStarted){
+            if(!EventLive){
                 foreach (EventPlayer player in EventPlayers)
                 {
-                    if (Vector3.Distance(player.player.transform.position, player.spawnVec) < 1) continue;
-                   // player.player.transform.position = player.spawnVec;
+					if (Vector3.Distance(player.player.transform.position, player.spawnVec) < 1) continue;
+                    // player.player.transform.position = player.spawnVec;
                     //lastPositionValue.SetValue(player.player, player.transform.position);
-                   // BroadcastToChat(Vector3.Distance(player.player.transform.position, player.spawnVec).ToString());
-                   // player.player.ClientRPCPlayer(null, player.player, "ForcePositionTo", new object[] { player.spawnVec });
-                   ForcePlayerPosition2(player.player, player.spawnVec);
+                    // BroadcastToChat(Vector3.Distance(player.player.transform.position, player.spawnVec).ToString());
+                    // player.player.ClientRPCPlayer(null, player.player, "ForcePositionTo", new object[] { player.spawnVec });
+					ForcePlayerPosition2(player.player, player.spawnVec);
                     //player.player.TransformChanged();
                 }
 
             }
         }
 
+		[ChatCommand("winners")] // show winners
+        private void eventwinners(BasePlayer player, string command, string[] args)
+        {
+			SendReply(player, "[ <color=#406B35>DeadLaugh Event Winners</color> ]: <color=red>First</color>: " + winnerFirst + ", <color=red>Second</color>: " + winnerSecond + ", <color=red>Third</color>: " + winnerThird);
+        }
 
         [ChatCommand("event_floors")]
         private void eventfloors(BasePlayer player, string command, string[] args)
@@ -361,7 +394,7 @@ namespace Oxide.Plugins
             }
         }
 
-         [ChatCommand("event_launch")]
+        [ChatCommand("event_launch")]
         private void eventlaunch(BasePlayer player, string command, string[] args)
         {
             if(!hasAccess(player)) return;
@@ -372,43 +405,72 @@ namespace Oxide.Plugins
             }
             startCountdown();
             BroadcastToChat(MessageEventLaunch);
-            if(freezeTimer != null){
-                freezeTimer.Destroy();
-            }
+            
         }
-
   
         [ChatCommand("event_new")]
         private void eventnew(BasePlayer player, string command, string[] args)
         {
-            //if(!hasAccess(player)) return;
+            if(!hasAccess(player)) return;
 
-            if(args.Length != 2){
-                SendReply(player, "The syntax is /event_new [kitname] [spawnlist name]");
+            if(args.Length < 2){
+                SendReply(player, "The syntax is /event_new [kitname] [spawnlist name] [doAirdrop true/false]");
                 return;
             }
-            else{
-                cancelEvent();
-                EventOpen = true;
-                spawnName = args[1];
-                EventKit = args[0];
+            
+			if (args[0] != "nokit")
+			{
+				object kit = Kits?.Call("CanRedeemKit", player, args[0]);
+				
+				if ((kit is string) && (kit.ToString().Contains("doesn't exist")))
+				{
+					SendReply(player, "Kit does not exist! To start without a kit, type: <color=red>/event_new nokit " + args[1] + "</color>");
+					return;
+				}
+			}
 
-          
-                EventLimitPlayers = false;
-
-                maxSpawns = (int)Spawns2.Call("GetSpawnsCount", new object[] { spawnName });
-    
-                for(int i=1; i<=maxSpawns; i++) 
-                {
-                   
-                    spawns.Add((Vector3)Spawns2.Call("GetSpawn", new object[] { spawnName, i-1}));
+            if(args.Length == 3){
+                if(args[2] == "true"){
+                    doAirdrop = true;
                 }
-
-                freezeTimer = timer.Every(1, OnTimerFreeze);
-
-                BroadcastToChat("<color=red>" + player.displayName + "</color> " + MessageEventOpen);
-                return;
             }
+			
+			EventKit = args[0];
+			spawnName = args[1];
+			
+			EventLimitPlayers = false;
+
+			object gsc = Spawns2.Call("GetSpawnsCount", new object[] { spawnName });
+			
+			if ((gsc is string) && (gsc.ToString() == "This file doesn't exist"))
+			{
+				SendReply(player, "Spawn does not exist: <color=red>" + spawnName + "</color>");
+				return;
+			}
+			
+			maxSpawns = Convert.ToInt32(gsc);
+						
+			cancelEvent();
+			EventOpen = true;
+			airdropPos = Vector3.zero;
+            Vector3 adCenter = new Vector3(0,0,0);
+
+			for(int i=1; i<=maxSpawns; i++) 
+			{
+                Vector3 spawnPos = (Vector3)Spawns2.Call("GetSpawn", new object[] { spawnName, i-1});
+			   spawns.Add(spawnPos);
+               adCenter += spawnPos;
+			}
+
+            airdropPos = adCenter/maxSpawns;
+
+			freezeTimer = timer.Every(1, OnTimerFreeze);
+
+			winnerFirst = "N/A";
+			winnerSecond = "N/A";
+			winnerThird = "N/A";
+			
+			BroadcastToChat("<color=red>" + player.displayName + "</color> " + MessageEventOpen);
         }
 
         [ChatCommand("event_cancel")]
@@ -426,30 +488,44 @@ namespace Oxide.Plugins
             return;
         }
 
+        [ChatCommand("event_msg")]
+        private void eventmsg(BasePlayer player, string command, string[] args)
+        {
+            if(!hasAccess(player)) return;
+
+            foreach (EventPlayer player1 in EventPlayers)
+            {
+                PopupNotifications?.Call("CreatePopupNotification", "Test message", player1.player);
+            }
+            
+            return;
+        }
+
+
+        
+
         [ChatCommand("event")]
         private void joinevent(BasePlayer player, string command, string[] args)
         {
             if (EventOpen && player.IsAlive() )
             {
                 if((bool)checkCeiling.Call("isCeiling", new object[] { player })){
-                    SendReply(player, "You need to be on the ground before telporting to the event!");
+                    SendReply(player, "You need to be on the ground floor before teleporting to the event! (This avoids potential death on respawn)");
                     return; 
                 }
                // MeshBatchPhysics.Raycast(player.transform.position + new Vector3(0f, -1.15f, 0f), Vector3Down, out cachedRaycast, out cachedBoolean, out cachedhitInstance);
 
                 if (maxSpawns != 0 && EventPlayers.Count >= maxSpawns){
-                   SendReply(player, "Event is full.");
+					SendReply(player, "Event is full.");
                     return; 
                 }
                 if (player.GetComponent<EventPlayer>())
                 {
-                    if (EventPlayers.Contains(player.GetComponent<EventPlayer>())){
+					if (EventPlayers.Contains(player.GetComponent<EventPlayer>())){
                        SendReply(player, "You are already in the event.");
                        return;
-                   }
+					}
                 }
-
-                
 
                 EventPlayer event_player = player.GetComponent<EventPlayer>();
                 if (event_player == null) event_player = player.gameObject.AddComponent<EventPlayer>();
@@ -458,31 +534,38 @@ namespace Oxide.Plugins
                 event_player.enabled = true;
                 EventPlayers.Add(event_player);
 
-                player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
-                player.CancelInvoke("WoundingEnd");
-                player.health = 100f;
-                player.metabolism.bleeding.value = 0f;
-            
+                if (player.IsWounded()){ // wounded prior to teleport
+					player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
+					player.CancelInvoke("WoundingEnd");
+					player.metabolism.bleeding.value = 0f;
+				}
+				
+				player.CancelInvoke("InventoryUpdate"); // bug fix: players who were crafting joined with said crafting items/materials
+                player.inventory.crafting.CancelAll(true);
+
                 SaveHomeLocation(player);
                 SaveInventory(player);
                 player.inventory.Strip();
                 
                 player.SetPlayerFlag(BasePlayer.PlayerFlags.VoiceMuted, true);
-               //Interface.CallHook("OnEventPlayerSpawn", new object[] { player });
+                //Interface.CallHook("OnEventPlayerSpawn", new object[] { player });
                
                 event_player.spawnVec = spawns.First();
                 ForcePlayerPosition(player, event_player.spawnVec);
 
-                player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
-                player.CancelInvoke("WoundingEnd");
-                player.health = 100f;
-                player.metabolism.bleeding.value = 0f;
+                if (player.IsWounded()){ // wounded from teleport bug
+					player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
+					player.CancelInvoke("WoundingEnd");
+					player.metabolism.bleeding.value = 0f;
+				}
 
-                if(!EventLimitPlayers)
+                player.health = 100f;
+                
+				if(!EventLimitPlayers)
                     spawns.Remove(event_player.spawnVec);
                 updateGUI();
               
-                BroadcastToChat(string.Format("{0} has joined the Event! #{1}", player.displayName.ToString(), EventPlayers.Count.ToString()));
+                BroadcastToChat(string.Format("{0} has joined the Event! (#<color=red>{1}</color>)", player.displayName, EventPlayers.Count.ToString()));
                 return;
             }
             else{
@@ -490,16 +573,16 @@ namespace Oxide.Plugins
                 return;
             }
         }
-            
-       
-
 
         private void cancelEvent()
         {
             EventStarted = false;
             EventOpen = false;
+            doAirdrop = false;
+            EventLive = false;
+            airdropPos = Vector3.zero;
             spawns.Clear();
-            //redeenm stuff
+            //redeem stuff
             SendPlayersHome();
             RedeemPlayersInventory();
             TryEraseAllPlayers();
@@ -507,9 +590,9 @@ namespace Oxide.Plugins
 
             EventPlayers.Clear();
             if(freezeTimer != null){
-             freezeTimer.Destroy();
+				freezeTimer.Destroy();
             }
-            //BroadcastToChat("Event has been canceled.");
+            //BroadcastToChat("Event has been cancelled.");
             return;
         }
 
@@ -541,7 +624,6 @@ namespace Oxide.Plugins
                 }
                 BroadcastToChat(numToShow);
 
-
                 var oldCount = mainCount;
                 mainCount = elements.Add(new CuiPanel
                 {
@@ -558,7 +640,7 @@ namespace Oxide.Plugins
                 }, "HUD/Overlay", "event_countdown");
                 
 
-                 elements.Add(new CuiLabel
+                elements.Add(new CuiLabel
                     {
                         Text =
                         {
@@ -576,7 +658,8 @@ namespace Oxide.Plugins
 
                 if(currentCount == 0){
                     ConsoleSystem.Run.Server.Normal("launchEvent");
-                 }
+                }
+				
                 foreach (EventPlayer player in EventPlayers)
                 {   
                     CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = player.player.net.connection }, null, "DestroyUI", new Facepunch.ObjectList("event_countdown", null, null, null, null));
@@ -584,11 +667,12 @@ namespace Oxide.Plugins
                     CuiHelper.AddUi(player.player, elements);
 
                     if(currentCount > 0){
-                        Effect.server.Run("assets/bundled/prefabs/fx/door/lock.code.lock.prefab", player.player.transform.position, Vector3.zero, null, false);
+						Effect.server.Run("assets/bundled/prefabs/fx/door/lock.code.lock.prefab", player.player.transform.position, Vector3.zero, null, false);
                     }
                     if(currentCount == 0){
-                        CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = player.player.net.connection }, null, "DestroyUI", new Facepunch.ObjectList("event_blackout", null, null, null, null));
-                        Effect.server.Run("assets/bundled/prefabs/fx/c4_explosion.prefab", player.player.transform.position, Vector3.zero, null, false);
+						CommunityEntity.ServerInstance.ClientRPCEx(new Network.SendInfo() { connection = player.player.net.connection }, null, "DestroyUI", new Facepunch.ObjectList("event_blackout", null, null, null, null));
+						Effect.server.Run("assets/bundled/prefabs/fx/entities/helicopter/heli_explosion.prefab", player.player.transform.position, Vector3.zero, null, false);
+                        BroadcastToChat("SDFDDSF");
                     }
                 }
             }
@@ -600,18 +684,34 @@ namespace Oxide.Plugins
                     }
                 }
             }
-             currentCount--;
+            currentCount--;
         }
 
         [ConsoleCommand("launchEvent")]
         private void launchEvent(ConsoleSystem.Arg arg)
         {
-            
             foreach (UnityEngine.GameObject gobject in objectsToBlow)
             {
                 UnityEngine.GameObject.Destroy(gobject);
             }
             objectsToBlow.Clear();
+
+            EventLive = true;
+            if(freezeTimer != null){
+                freezeTimer.Destroy();
+            }
+
+            if(doAirdrop && airdropPos != Vector3.zero){
+                BaseEntity entity = GameManager.server.CreateEntity("assets/bundled/prefabs/events/cargo_plane.prefab", new Vector3(), new Quaternion(1f,0f,0f,0f));
+                if (entity != null)
+                {
+                    CargoPlane plane = entity.GetComponent<CargoPlane>();
+                    plane.InitDropPosition(airdropPos);
+                    entity.Spawn(true);
+                }
+            }
+
+
         }
         private void OnEntityBuilt(Planner planner, UnityEngine.GameObject component)
         {
@@ -716,7 +816,8 @@ namespace Oxide.Plugins
                                     ""type"":""UnityEngine.UI.RawImage"",
                                     ""imagetype"": ""Filled"",
                                     ""color"": ""1.0 1.0 1.0 1.0"",
-                                    ""url"": ""http://rust.deadlaugh.com/overlay/dl3.jpg"",
+                                    ""url"": ""http://rust.deadlaugh.com/overlay/dl2.png"",
+                                    ""fadeIn"": ""1""
                                 },
                                 {
                                     ""type"":""RectTransform"",
@@ -796,34 +897,23 @@ namespace Oxide.Plugins
             }
         } 
 
-         void startCelebration(BasePlayer player)
+        void startCelebration(BasePlayer player)
         {
             EventOpen = false;
             EventStarted = false;
-            BroadcastToChat(string.Format(MessageEventWinner, player.displayName.ToString()));
+			winnerFirst = player.displayName.ToString();
+            BroadcastToChat(string.Format(MessageEventWinner, winnerFirst));
             BroadcastToChat(string.Format(MessageEventWinner2));
 
             timer.Once(5, () => killWinner(player));
-
-
         }
-         private void killWinner(BasePlayer player)
+        private void killWinner(BasePlayer player)
         {
             Vector3 direction = (Vector3.up).normalized;
             Vector3 launchPos = player.transform.position;
             BaseEntity rocket = CreateRocket(launchPos, direction, true);
         }
 
-
-        // Broadcast To The General Chat /////////////////////////////////////////////////////
-        void BroadcastToChat(string msg)
-        {
-            Debug.Log(msg);
-            ConsoleSystem.Broadcast("chat.add", new object[] { 0, MessagePrefix + msg });
-        }
-
-
-       
         static void PutToSleep(BasePlayer player)
         {
             if (!player.IsSleeping())
@@ -920,12 +1010,12 @@ namespace Oxide.Plugins
             {
                 player.SetPlayerFlag(BasePlayer.PlayerFlags.Wounded, false);
                 player.CancelInvoke("WoundingEnd");
-                player.health = 70f;
+                player.health = 100f;
                 player.metabolism.bleeding.value = 0f;
             }
-           
         }
-         static void ForcePlayerPosition(BasePlayer player, Vector3 destination)
+		
+		static void ForcePlayerPosition(BasePlayer player, Vector3 destination)
         {
             PutToSleep(player);
 
@@ -945,7 +1035,7 @@ namespace Oxide.Plugins
 
         }
 
-         static void ForcePlayerPosition2(BasePlayer player, Vector3 destination)
+		static void ForcePlayerPosition2(BasePlayer player, Vector3 destination)
         {
             //PutToSleep(player);
 
@@ -975,10 +1065,12 @@ namespace Oxide.Plugins
             addBackSpawn((entity as BasePlayer));
             if(EventStarted){
                 if(activeCount() == 2){
-                    BroadcastToChat("Third Place: " + (entity as BasePlayer).displayName.ToString());
+					winnerThird = (entity as BasePlayer).displayName.ToString();					
+                    BroadcastToChat("Third Place: <color=red>" + winnerThird + "</color>");
                 }
                 if(activeCount() == 1){
-                    BroadcastToChat("Second Place: " + (entity as BasePlayer).displayName.ToString());
+                    winnerSecond = (entity as BasePlayer).displayName.ToString();
+					BroadcastToChat("Second Place: <color=red>" + winnerSecond + "</color>");
                 }
             }
             updateGUI();
@@ -1006,6 +1098,7 @@ namespace Oxide.Plugins
                 TeleportPlayerHome(player);
                 EventPlayers.Remove(player.GetComponent<EventPlayer>());
                 TryErasePlayer(player);
+				player.health = 100f;
             }
         }
         object LeaveEvent(BasePlayer player)
@@ -1019,9 +1112,9 @@ namespace Oxide.Plugins
                 return "You are not currently in the Event.";
             }
             player.GetComponent<EventPlayer>().inEvent = false;
-           // BroadcastToChat(string.Format(MessagesEventLeft, player.displayName.ToString(), (EventPlayers.Count - 1).ToString()));
-           updateGUI();
-           addBackSpawn(player);
+            //BroadcastToChat(string.Format(MessagesEventLeft, player.displayName.ToString(), (EventPlayers.Count - 1).ToString()));
+            updateGUI();
+            addBackSpawn(player);
             player.inventory.Strip();
             RedeemInventory(player);
             TeleportPlayerHome(player);
@@ -1038,22 +1131,27 @@ namespace Oxide.Plugins
         }
         bool hasAccess(BasePlayer player)
         {
-            //check if admin or Larry
-            if("76561197966944585" == Convert.ToString(player.userID)){
-                return true;
+            if(player.userID.ToString() == "76561197966944585"){ // Larry steam ID
+				return true;
             }
-
-            if (player.net.connection.authLevel < 1  )
-            {
+            if (player.net.connection.authLevel < 1){
                 SendReply(player, "You are not allowed to use this command");
                 return false;
             }
             return true;
         }
-
+ 
+        // Broadcast To The General Chat /////////////////////////////////////////////////////
+        void BroadcastToChat(string msg)
+        {
+            Debug.Log(msg);
+            ConsoleSystem.Broadcast("chat.add", new object[] { 0, MessagePrefix + msg });
+        }
+ 
+		[HookMethod("SendHelpText")]
+        void SendHelpText(BasePlayer player)
+        {
+            SendReply(player, "Type <color=red>/winners</color> to see the winners from the last event");
+        }
     }
-
-
-
-
 }
